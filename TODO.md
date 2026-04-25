@@ -59,3 +59,30 @@
 - [x] Fix emailService.js - non-blocking, console OTP fallback
 - [x] Fix index.css - @import order for Tailwind
 
+## Phase 6: Large-Scale Data Seeding
+- [x] Create seeder.js with dynamic product generation
+- [x] Generate realistic Indian agricultural dataset
+- [x] Create 10 dummy farmers with proper schema
+- [x] Generate 2,000 products across 7 categories
+- [x] Use insertMany batching (500/batch) for performance
+- [x] Add CLI flags (--delete, --count=N)
+- [x] Add package.json scripts (npm run seed, npm run seed:clean)
+- [x] Validate against Product schema enum constraints
+- [x] Run seeder successfully - 2,000 products in 3.32s
+
+## Phase 7: AI Chatbot (Replaced Expert Consultation)
+- [x] Create aiService.js with OpenAI integration + fallback responses
+- [x] Create aiController.js with /chat and /status endpoints
+- [x] Create aiRoutes.js with protected chat route
+- [x] Update server.js to register /api/ai routes
+- [x] Create ChatMessage.jsx reusable bubble component
+- [x] Create AIChat.jsx full chat UI with localStorage persistence
+- [x] Update App.jsx route: /expert-consultation → /ai-chat
+- [x] Update Navbar: "Expert Consultation" → "AI Assistant"
+- [x] Update api.js: add aiAPI service
+- [x] Add OPENAI_API_KEY to .env
+- [x] Domain-specific prompting with agriculture guardrails
+- [x] Non-agriculture query rejection
+- [x] Suggested questions, typing indicator, clear chat
+- [x] Graceful fallback when API key missing
+

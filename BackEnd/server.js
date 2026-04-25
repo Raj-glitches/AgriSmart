@@ -19,6 +19,7 @@ import cropRoutes from './routes/cropRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
 import expertRoutes from './routes/expertRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
+import aiRoutes from './routes/aiRoutes.js';
 
 // Import middleware
 import { errorHandler } from './middleware/errorMiddleware.js';
@@ -70,6 +71,7 @@ app.use('/api/crops', cropRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/expert', expertRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/ai', aiRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
