@@ -29,7 +29,7 @@ const Navbar = () => {
   const authLinks = [
     { name: 'Dashboard', path: '/dashboard' },
     { name: 'Crop Recommendation', path: '/crop-recommendation' },
-    { name: 'Expert Consultation', path: '/expert-consultation' },
+    { name: 'AI Assistant', path: '/ai-chat' },
   ];
 
   return (

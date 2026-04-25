@@ -25,7 +25,7 @@ import Profile from './pages/Profile.jsx';
 // Feature Pages
 import CropRecommendation from './pages/CropRecommendation.jsx';
 import DiseaseDetection from './pages/DiseaseDetection.jsx';
-import ExpertConsultation from './pages/ExpertConsultation.jsx';
+import AIChat from './pages/AIChat.jsx';
 import ChatPage from './pages/ChatPage.jsx';
 import OrderTracking from './pages/OrderTracking.jsx';
 
@@ -67,7 +67,7 @@ function App() {
           <Route path="/orders" element={<PrivateRoute><OrderTracking /></PrivateRoute>} />
           <Route path="/crop-recommendation" element={<PrivateRoute><CropRecommendation /></PrivateRoute>} />
           <Route path="/disease-detection" element={<PrivateRoute><DiseaseDetection /></PrivateRoute>} />
-          <Route path="/expert-consultation" element={<PrivateRoute><ExpertConsultation /></PrivateRoute>} />
+          <Route path="/ai-chat" element={<PrivateRoute><AIChat /></PrivateRoute>} />
           <Route path="/chat" element={<PrivateRoute><ChatPage /></PrivateRoute>} />
           <Route path="/chat/:chatId" element={<PrivateRoute><ChatPage /></PrivateRoute>} />
 

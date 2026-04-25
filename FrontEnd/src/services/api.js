@@ -123,6 +123,12 @@ export const expertAPI = {
   rate: (id, data) => api.post(`/expert/consultations/${id}/rate`, data),
 };
 
+// AI Chat Service
+export const aiAPI = {
+  chat: (data) => api.post('/ai/chat', data),
+  getStatus: () => api.get('/ai/status'),
+};
+
 // Admin Service
 export const adminAPI = {
   getStats: () => api.get('/admin/stats'),
