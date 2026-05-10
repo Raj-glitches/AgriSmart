@@ -1,3 +1,5 @@
+// controllers/orderController.js
+
 import mongoose from 'mongoose';
 import Order from '../models/Order.js';
 import Product from '../models/Product.js';
@@ -5,297 +7,671 @@ import { asyncHandler } from '../middleware/errorMiddleware.js';
 import { sendOrderConfirmation } from '../utils/emailService.js';
 
 /**
- * @desc    Create new order
+ * =========================================
+ * CREATE ORDER
+ * =========================================
  * @route   POST /api/orders
- * @access  Private
+ * @access  Private (Buyer)
  */
 export const createOrder = asyncHandler(async (req, res) => {
-  const { items, shippingAddress, paymentMethod = 'cod' } = req.body;
+  try {
+    // Prevent experts from ordering
+    if (req.user.role === 'expert') {
+      return res.status(403).json({
+        success: false,
+        message: 'Experts cannot place marketplace orders',
+      });
+    }
 
-  if (!items || !Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({
+    // Allow only buyers
+    if (req.user.role !== 'buyer') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only buyers can place orders',
+      });
+    }
+
+    const {
+      items,
+      shippingAddress,
+      paymentMethod = 'cod',
+    } = req.body;
+
+    // Validate items
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No order items provided',
+      });
+    }
+
+    // Validate shipping address
+    if (
+      !shippingAddress ||
+      !shippingAddress.fullName ||
+      !shippingAddress.phone ||
+      !shippingAddress.address ||
+      !shippingAddress.city ||
+      !shippingAddress.state ||
+      !shippingAddress.pincode
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Complete shipping address is required',
+      });
+    }
+
+    let totalAmount = 0;
+    let farmerId = null;
+
+    const orderItems = [];
+
+    // Process products safely
+    for (const item of items) {
+      if (!item.productId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Each item must contain productId',
+        });
+      }
+
+      const product = await Product.findById(item.productId);
+
+      if (!product) {
+        return res.status(404).json({
+          success: false,
+          message: `Product not found: ${item.productId}`,
+        });
+      }
+
+      // First farmer assignment
+      if (!farmerId) {
+        farmerId = product.farmer;
+      }
+
+      // Prevent multi-farmer orders
+      if (product.farmer.toString() !== farmerId.toString()) {
+        return res.status(400).json({
+          success: false,
+          message:
+            'All products in one order must belong to same farmer',
+        });
+      }
+
+      // Validate quantity
+      if (
+        !item.quantity ||
+        item.quantity <= 0 ||
+        product.quantity < item.quantity
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient stock for ${product.name}`,
+        });
+      }
+
+      // Safe stock update
+      const updatedProduct = await Product.findOneAndUpdate(
+        {
+          _id: product._id,
+          quantity: { $gte: item.quantity },
+        },
+        {
+          $inc: {
+            quantity: -item.quantity,
+          },
+        },
+        {
+          new: true,
+        }
+      );
+
+      if (!updatedProduct) {
+        return res.status(400).json({
+          success: false,
+          message: `Stock update failed for ${product.name}`,
+        });
+      }
+
+      // Mark unavailable
+      if (updatedProduct.quantity <= 0) {
+        updatedProduct.isAvailable = false;
+        await updatedProduct.save();
+      }
+
+      totalAmount += product.price * item.quantity;
+
+      orderItems.push({
+        product: product._id,
+        name: product.name,
+        price: product.price,
+        quantity: item.quantity,
+        unit: product.unit,
+        image: product.images?.[0] || '',
+      });
+    }
+
+    // Create order
+    const order = await Order.create({
+      buyer: req.user.id,
+      farmer: farmerId,
+      items: orderItems,
+      totalAmount,
+      paymentMethod,
+      paymentStatus: 'pending',
+      shippingAddress,
+      status: 'pending',
+      trackingUpdates: [
+        {
+          status: 'pending',
+          message: 'Order placed successfully',
+          timestamp: new Date(),
+        },
+      ],
+    });
+
+    // Populate
+    const populatedOrder = await Order.findById(order._id)
+      .populate('buyer', 'name email phone')
+      .populate('farmer', 'name email phone')
+      .populate('items.product', 'name images price');
+
+    // Email notification
+    try {
+      await sendOrderConfirmation(
+        req.user.email,
+        populatedOrder,
+        req.user.name
+      );
+    } catch (error) {
+      console.error(
+        '[createOrder] Email error:',
+        error.message
+      );
+    }
+
+    // Socket notification
+    try {
+      const io = req.app.get('io');
+
+      if (io) {
+        io.emit('new_order', {
+          farmerId,
+          order: populatedOrder,
+        });
+      }
+    } catch (error) {
+      console.error(
+        '[createOrder] Socket error:',
+        error.message
+      );
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: 'Order placed successfully',
+      data: populatedOrder,
+    });
+  } catch (error) {
+    console.error('[createOrder] Error:', error);
+
+    return res.status(500).json({
       success: false,
-      message: 'No order items provided',
+      message: 'Failed to create order',
+      error: error.message,
     });
   }
-
-  // Validate items and calculate totals
-  let totalAmount = 0;
-  const orderItems = [];
-
-  for (const item of items) {
-    if (!item.productId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Each item must have a productId',
-      });
-    }
-
-    const product = await Product.findById(item.productId);
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        message: `Product not found: ${item.productId}`,
-      });
-    }
-
-    if (product.quantity < (item.quantity || 0)) {
-      return res.status(400).json({
-        success: false,
-        message: `Insufficient quantity for ${product.name}. Available: ${product.quantity}`,
-      });
-    }
-
-    totalAmount += product.price * item.quantity;
-    orderItems.push({
-      product: product._id,
-      name: product.name,
-      price: product.price,
-      quantity: item.quantity,
-      unit: product.unit,
-      image: product.images?.[0] || '',
-    });
-
-    // Update product quantity
-    product.quantity -= item.quantity;
-    if (product.quantity === 0) product.isAvailable = false;
-    await product.save();
-  }
-
-  // Create order
-  const order = await Order.create({
-    buyer: req.user.id,
-    farmer: items[0]?.farmerId || product.farmer,
-    items: orderItems,
-    totalAmount,
-    paymentMethod,
-    shippingAddress,
-    status: 'pending',
-    trackingUpdates: [
-      {
-        status: 'pending',
-        message: 'Order placed successfully',
-        timestamp: new Date(),
-      },
-    ],
-  });
-
-  // Send confirmation email (non-blocking)
-  try {
-    await sendOrderConfirmation(req.user.email, order, req.user.name);
-  } catch (error) {
-    console.error('[OrderController] Failed to send order confirmation email:', error.message);
-  }
-
-  // Emit notification to farmer (non-blocking)
-  try {
-    const io = req.app.get('io');
-    if (io) {
-      io.emit('new_order', { farmerId: order.farmer, order });
-    }
-  } catch (error) {
-    console.error('[OrderController] Failed to emit socket event:', error.message);
-  }
-
-  res.status(201).json({
-    success: true,
-    message: 'Order placed successfully',
-    data: order,
-  });
 });
 
 /**
- * @desc    Get buyer orders
+ * =========================================
+ * GET BUYER ORDERS
+ * =========================================
  * @route   GET /api/orders/my-orders
- * @access  Private
+ * @access  Private (Buyer)
  */
 export const getMyOrders = asyncHandler(async (req, res) => {
-  const { status, page = 1, limit = 10 } = req.query;
+  try {
+    // Prevent expert access
+    if (req.user.role === 'expert') {
+      return res.status(403).json({
+        success: false,
+        message: 'Experts cannot access orders',
+      });
+    }
 
-  const query = { buyer: req.user.id };
-  if (status) query.status = status;
+    // Only buyers
+    if (req.user.role !== 'buyer') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied',
+      });
+    }
 
-  const orders = await Order.find(query)
-    .populate('farmer', 'name avatar')
-    .populate('items.product', 'name images')
-    .sort('-createdAt')
-    .skip((Number(page) - 1) * Number(limit))
-    .limit(Number(limit));
+    const page = Math.max(
+      1,
+      parseInt(req.query.page) || 1
+    );
 
-  const total = await Order.countDocuments(query);
+    const limit = Math.min(
+      50,
+      Math.max(1, parseInt(req.query.limit) || 10)
+    );
 
-  res.status(200).json({
-    success: true,
-    count: orders.length,
-    total,
-    data: orders,
-  });
+    const query = {
+      buyer: req.user.id,
+    };
+
+    if (req.query.status) {
+      query.status = req.query.status;
+    }
+
+    const orders = await Order.find(query)
+      .populate({
+        path: 'farmer',
+        select: 'name email avatar',
+      })
+      .populate({
+        path: 'items.product',
+        select: 'name images price',
+      })
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
+
+    const total = await Order.countDocuments(query);
+
+    return res.status(200).json({
+      success: true,
+      count: orders.length,
+      total,
+      currentPage: page,
+      totalPages: Math.ceil(total / limit),
+      data: orders,
+    });
+  } catch (error) {
+    console.error('[getMyOrders] Error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch orders',
+      error: error.message,
+    });
+  }
 });
 
 /**
- * @desc    Get farmer orders
- * @route   GET /api/orders/farmer-orders
- * @access  Private/Farmer
+ * =========================================
+ * GET FARMER ORDERS
+ * =========================================
+ * @route   GET /api/orders/farmer/orders
+ * @access  Private (Farmer/Admin)
  */
 export const getFarmerOrders = asyncHandler(async (req, res) => {
-  const { status, page = 1, limit = 10 } = req.query;
+  try {
+    // Prevent expert access
+    if (req.user.role === 'expert') {
+      return res.status(403).json({
+        success: false,
+        message: 'Experts cannot access farmer orders',
+      });
+    }
 
-  const query = { farmer: req.user.id };
-  if (status) query.status = status;
+    // Only farmer/admin
+    if (
+      req.user.role !== 'farmer' &&
+      req.user.role !== 'admin'
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied',
+      });
+    }
 
-  const orders = await Order.find(query)
-    .populate('buyer', 'name avatar phone')
-    .populate('items.product', 'name images')
-    .sort('-createdAt')
-    .skip((Number(page) - 1) * Number(limit))
-    .limit(Number(limit));
+    const page = Math.max(
+      1,
+      parseInt(req.query.page) || 1
+    );
 
-  const total = await Order.countDocuments(query);
+    const limit = Math.min(
+      50,
+      Math.max(1, parseInt(req.query.limit) || 10)
+    );
 
-  res.status(200).json({
-    success: true,
-    count: orders.length,
-    total,
-    data: orders,
-  });
+    const query = {
+      farmer: req.user.id,
+    };
+
+    if (req.query.status) {
+      query.status = req.query.status;
+    }
+
+    const orders = await Order.find(query)
+      .populate({
+        path: 'buyer',
+        select: 'name email phone avatar',
+      })
+      .populate({
+        path: 'items.product',
+        select: 'name images price',
+      })
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
+
+    const total = await Order.countDocuments(query);
+
+    return res.status(200).json({
+      success: true,
+      count: orders.length,
+      total,
+      currentPage: page,
+      totalPages: Math.ceil(total / limit),
+      data: orders,
+    });
+  } catch (error) {
+    console.error('[getFarmerOrders] Error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch farmer orders',
+      error: error.message,
+    });
+  }
 });
 
 /**
- * @desc    Get single order
+ * =========================================
+ * GET SINGLE ORDER
+ * =========================================
  * @route   GET /api/orders/:id
  * @access  Private
  */
 export const getOrder = asyncHandler(async (req, res) => {
-  const order = await Order.findById(req.params.id)
-    .populate('buyer', 'name email phone avatar')
-    .populate('farmer', 'name email phone avatar farmDetails')
-    .populate('items.product', 'name images category');
+  try {
+    // Prevent invalid ObjectId crash
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid order ID',
+      });
+    }
 
-  if (!order) {
-    return res.status(404).json({
+    const order = await Order.findById(req.params.id)
+      .populate('buyer', 'name email phone avatar')
+      .populate(
+        'farmer',
+        'name email phone avatar farmDetails'
+      )
+      .populate(
+        'items.product',
+        'name images category price'
+      );
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found',
+      });
+    }
+
+    const userId = req.user.id.toString();
+
+    const buyerId = order.buyer?._id?.toString();
+
+    const farmerId = order.farmer?._id?.toString();
+
+    // Authorization
+    if (
+      buyerId !== userId &&
+      farmerId !== userId &&
+      req.user.role !== 'admin'
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized',
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: order,
+    });
+  } catch (error) {
+    console.error('[getOrder] Error:', error);
+
+    return res.status(500).json({
       success: false,
-      message: 'Order not found',
+      message: 'Failed to fetch order',
+      error: error.message,
     });
   }
-
-  // Check authorization
-  const buyerId = order.buyer?._id?.toString();
-  const farmerId = order.farmer?._id?.toString();
-  const userId = req.user.id.toString();
-
-  if (buyerId !== userId && farmerId !== userId && req.user.role !== 'admin') {
-    return res.status(403).json({
-      success: false,
-      message: 'Not authorized to view this order',
-    });
-  }
-
-  res.status(200).json({
-    success: true,
-    data: order,
-  });
 });
 
 /**
- * @desc    Update order status
+ * =========================================
+ * UPDATE ORDER STATUS
+ * =========================================
  * @route   PUT /api/orders/:id/status
- * @access  Private/Farmer or Admin
+ * @access  Private (Farmer/Admin)
  */
 export const updateOrderStatus = asyncHandler(async (req, res) => {
-  const { status, message } = req.body;
-
-  const order = await Order.findById(req.params.id);
-  if (!order) {
-    return res.status(404).json({
-      success: false,
-      message: 'Order not found',
-    });
-  }
-
-  // Only farmer or admin can update
-  if (order.farmer.toString() !== req.user.id && req.user.role !== 'admin') {
-    return res.status(403).json({
-      success: false,
-      message: 'Not authorized to update this order',
-    });
-  }
-
-  order.status = status;
-  order.trackingUpdates.push({
-    status,
-    message: message || `Order ${status}`,
-    timestamp: new Date(),
-  });
-
-  if (status === 'delivered') {
-    order.deliveryDate = new Date();
-  }
-
-  await order.save();
-
-  // Notify buyer (non-blocking)
   try {
-    const io = req.app.get('io');
-    if (io) {
-      io.emit('order_updated', { buyerId: order.buyer, order });
+    // Prevent expert access
+    if (req.user.role === 'expert') {
+      return res.status(403).json({
+        success: false,
+        message: 'Experts cannot update orders',
+      });
     }
-  } catch (error) {
-    console.error('[OrderController] Failed to emit order update:', error.message);
-  }
 
-  res.status(200).json({
-    success: true,
-    message: 'Order status updated',
-    data: order,
-  });
+    const { status, message } = req.body;
+
+    const allowedStatuses = [
+      'pending',
+      'confirmed',
+      'processing',
+      'shipped',
+      'delivered',
+      'cancelled',
+    ];
+
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid order status',
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid order ID',
+      });
+    }
+
+    const order = await Order.findById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found',
+      });
+    }
+
+    // Authorization
+    if (
+      !order.farmer ||
+      (
+        order.farmer.toString() !== req.user.id &&
+        req.user.role !== 'admin'
+      )
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized',
+      });
+    }
+
+    order.status = status;
+
+    order.trackingUpdates.push({
+      status,
+      message: message || `Order ${status}`,
+      timestamp: new Date(),
+    });
+
+    if (status === 'delivered') {
+      order.deliveryDate = new Date();
+      order.paymentStatus = 'completed';
+    }
+
+    await order.save();
+
+    // Socket notification
+    try {
+      const io = req.app.get('io');
+
+      if (io) {
+        io.emit('order_updated', {
+          buyerId: order.buyer,
+          order,
+        });
+      }
+    } catch (error) {
+      console.error(
+        '[updateOrderStatus] Socket error:',
+        error.message
+      );
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Order status updated',
+      data: order,
+    });
+  } catch (error) {
+    console.error('[updateOrderStatus] Error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update order status',
+      error: error.message,
+    });
+  }
 });
 
 /**
- * @desc    Get order analytics
- * @route   GET /api/orders/analytics
- * @access  Private/Farmer
+ * =========================================
+ * ORDER ANALYTICS
+ * =========================================
+ * @route   GET /api/orders/farmer/analytics
+ * @access  Private (Farmer/Admin)
  */
 export const getOrderAnalytics = asyncHandler(async (req, res) => {
-  const farmerId = req.user.id;
-
   try {
-    const farmerObjectId = new mongoose.Types.ObjectId(farmerId);
+    // Prevent expert access
+    if (req.user.role === 'expert') {
+      return res.status(403).json({
+        success: false,
+        message: 'Experts cannot access analytics',
+      });
+    }
+
+    // Only farmer/admin
+    if (
+      req.user.role !== 'farmer' &&
+      req.user.role !== 'admin'
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied',
+      });
+    }
+
+    const farmerObjectId = new mongoose.Types.ObjectId(
+      req.user.id
+    );
 
     const analytics = await Order.aggregate([
-      { $match: { farmer: farmerObjectId } },
+      {
+        $match: {
+          farmer: farmerObjectId,
+        },
+      },
       {
         $group: {
           _id: null,
           totalOrders: { $sum: 1 },
           totalRevenue: { $sum: '$totalAmount' },
           avgOrderValue: { $avg: '$totalAmount' },
+
           pendingOrders: {
-            $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] },
+            $sum: {
+              $cond: [
+                { $eq: ['$status', 'pending'] },
+                1,
+                0,
+              ],
+            },
           },
+
           completedOrders: {
-            $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] },
+            $sum: {
+              $cond: [
+                { $eq: ['$status', 'delivered'] },
+                1,
+                0,
+              ],
+            },
           },
+
           cancelledOrders: {
-            $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] },
+            $sum: {
+              $cond: [
+                { $eq: ['$status', 'cancelled'] },
+                1,
+                0,
+              ],
+            },
           },
         },
       },
     ]);
 
-    // Monthly revenue
     const monthlyRevenue = await Order.aggregate([
-      { $match: { farmer: farmerObjectId, status: 'delivered' } },
+      {
+        $match: {
+          farmer: farmerObjectId,
+          status: 'delivered',
+        },
+      },
       {
         $group: {
-          _id: { $dateToString: { format: '%Y-%m', date: '$createdAt' } },
-          revenue: { $sum: '$totalAmount' },
-          orders: { $sum: 1 },
+          _id: {
+            $dateToString: {
+              format: '%Y-%m',
+              date: '$createdAt',
+            },
+          },
+          revenue: {
+            $sum: '$totalAmount',
+          },
+          orders: {
+            $sum: 1,
+          },
         },
       },
-      { $sort: { _id: 1 } },
+      {
+        $sort: {
+          _id: 1,
+        },
+      },
     ]);
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       data: {
         summary: analytics[0] || {},
@@ -303,15 +679,12 @@ export const getOrderAnalytics = asyncHandler(async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('[OrderController] Analytics error:', error.message);
-    // Return empty analytics instead of crashing
-    res.status(200).json({
-      success: true,
-      data: {
-        summary: {},
-        monthlyRevenue: [],
-      },
+    console.error('[getOrderAnalytics] Error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch analytics',
+      error: error.message,
     });
   }
 });
-

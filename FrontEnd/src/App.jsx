@@ -28,6 +28,7 @@ import DiseaseDetection from './pages/DiseaseDetection.jsx';
 import AIChat from './pages/AIChat.jsx';
 import ChatPage from './pages/ChatPage.jsx';
 import OrderTracking from './pages/OrderTracking.jsx';
+import ExpertConsultation from './pages/ExpertConsultation.jsx';
 
 // Admin
 import AdminDashboard from './components/dashboard/AdminDashboard.jsx';
@@ -68,17 +69,25 @@ function App() {
           <Route path="/crop-recommendation" element={<PrivateRoute><CropRecommendation /></PrivateRoute>} />
           <Route path="/disease-detection" element={<PrivateRoute><DiseaseDetection /></PrivateRoute>} />
           <Route path="/ai-chat" element={<PrivateRoute><AIChat /></PrivateRoute>} />
+          <Route
+            path="/expert-consultation"
+            element={
+              <PrivateRoute>
+                <ExpertConsultation />
+              </PrivateRoute>
+            }
+          />
           <Route path="/chat" element={<PrivateRoute><ChatPage /></PrivateRoute>} />
           <Route path="/chat/:chatId" element={<PrivateRoute><ChatPage /></PrivateRoute>} />
 
           {/* Admin Routes */}
-          <Route 
-            path="/admin/*" 
+          <Route
+            path="/admin/*"
             element={
               <PrivateRoute roles={['admin']}>
                 <AdminDashboard />
               </PrivateRoute>
-            } 
+            }
           />
         </Routes>
       </main>
